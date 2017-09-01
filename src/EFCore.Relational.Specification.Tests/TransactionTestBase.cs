@@ -342,6 +342,33 @@ namespace Microsoft.EntityFrameworkCore
             AssertStoreInitialState();
         }
 
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public virtual void SaveChanges_throws_for_suppressed_ambient_transactions(bool connectionString)
+        {
+            if (!AmbientTransactionsSupported)
+            {
+                return;
+            }
+
+            using (var context = connectionString ? CreateContextWithConnectionString() : CreateContext())
+            {
+                using (TestUtilities.TestStore.CreateTransactionScope())
+                {
+                    context.Add(new TransactionCustomer { Id = 77, Name = "Bobble" });
+                    context.Entry(context.Set<TransactionCustomer>().Last()).State = EntityState.Added;
+
+                    using (new TransactionScope(TransactionScopeOption.Suppress))
+                    {
+                        Assert.Throws<InvalidOperationException>(() => context.SaveChanges());
+                    }
+                }
+            }
+
+            AssertStoreInitialState();
+        }
+
         [Fact]
         public virtual void SaveChanges_uses_enlisted_transaction_after_ambient_transaction()
         {

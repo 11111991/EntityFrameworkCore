@@ -497,17 +497,15 @@ namespace Microsoft.EntityFrameworkCore.Storage
                 return;
             }
 
-            // Note that the connection can already be enlisted in a transaction (since the user  could enlist it manually using
-            // DbConnection.EnlistTransaction() method). If the transaction the connection is enlisted in has not completed
-            // (e.g. nested transaction) this call will fail (throw). Also "current" can be "null" here which means that the
-            // transaction used in the previous operation has completed. In this case we should not enlist the connection in
-            // "null" transaction as it would mean "unenlist" if the currently enlisted transaction has not completed
-            // and would cause an exception. And if the currently enlisted transaction has completed enlisting with "null" would be
-            // a no-op - so again no reason to do it.
+            DbConnection.EnlistTransaction(current);
+
+            if (AmbientTransaction != null)
+            {
+                AmbientTransaction.TransactionCompleted -= HandleTransactionCompleted;
+                _openedCount--;
+            }
             if (current != null)
             {
-                DbConnection.EnlistTransaction(current);
-
                 _openedCount++;
                 current.TransactionCompleted += HandleTransactionCompleted;
             }
@@ -519,7 +517,11 @@ namespace Microsoft.EntityFrameworkCore.Storage
         {
             Close();
 
-            ((Transaction)sender).TransactionCompleted -= HandleTransactionCompleted;
+            if (AmbientTransaction != null)
+            {
+                AmbientTransaction.TransactionCompleted -= HandleTransactionCompleted;
+                AmbientTransaction = null;
+            }
         }
 
         /// <summary>
