@@ -307,9 +307,9 @@ namespace Microsoft.EntityFrameworkCore
                 return;
             }
 
+            DbConnection connection;
             using (var context = CreateContextWithConnectionString())
             {
-                DbConnection connection;
                 using (TestUtilities.TestStore.CreateTransactionScope())
                 {
                     context.Database.AutoTransactionsEnabled = autoTransactionsEnabled;
@@ -335,9 +335,9 @@ namespace Microsoft.EntityFrameworkCore
 
                     Assert.Equal(ConnectionState.Open, connection.State);
                 }
-
-                Assert.Equal(ConnectionState.Closed, connection.State);
             }
+
+            Assert.Equal(ConnectionState.Closed, connection.State);
 
             AssertStoreInitialState();
         }

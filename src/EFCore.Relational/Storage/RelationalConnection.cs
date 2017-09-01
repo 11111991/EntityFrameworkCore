@@ -35,6 +35,8 @@ namespace Microsoft.EntityFrameworkCore.Storage
         private int _openedCount;
         private bool _openedInternally;
         private int? _commandTimeout;
+        private Transaction _ambientTransaction;
+        private SemaphoreSlim _semaphore { get; } = new SemaphoreSlim(1);
 
         /// <summary>
         ///     Initializes a new instance of the <see cref="RelationalConnection" /> class.
@@ -139,11 +141,6 @@ namespace Microsoft.EntityFrameworkCore.Storage
 
             EnlistedTransaction = transaction;
         }
-
-        /// <summary>
-        ///     The last ambient transaction used.
-        /// </summary>
-        public virtual Transaction AmbientTransaction { get; [param: CanBeNull] protected set; }
 
         /// <summary>
         ///     Indicates whether the store connection supports ambient transactions
@@ -395,10 +392,10 @@ namespace Microsoft.EntityFrameworkCore.Storage
             CurrentTransaction?.Dispose();
             CurrentTransaction = null;
             EnlistedTransaction = null;
-            if (AmbientTransaction != null)
+            if (_ambientTransaction != null)
             {
-                AmbientTransaction.TransactionCompleted -= HandleTransactionCompleted;
-                AmbientTransaction = null;
+                _ambientTransaction.TransactionCompleted -= HandleTransactionCompleted;
+                _ambientTransaction = null;
             }
             _openedCount = previousOpenedCount;
         }
@@ -492,35 +489,52 @@ namespace Microsoft.EntityFrameworkCore.Storage
                 Dependencies.TransactionLogger.AmbientTransactionWarning(this, DateTimeOffset.UtcNow);
             }
 
-            if (Equals(current, AmbientTransaction))
+            if (Equals(current, _ambientTransaction))
             {
                 return;
             }
 
             DbConnection.EnlistTransaction(current);
-
-            if (AmbientTransaction != null)
+            try
             {
-                AmbientTransaction.TransactionCompleted -= HandleTransactionCompleted;
-                _openedCount--;
-            }
-            if (current != null)
-            {
-                _openedCount++;
-                current.TransactionCompleted += HandleTransactionCompleted;
-            }
+                _semaphore.Wait();
 
-            AmbientTransaction = current;
+                if (_ambientTransaction != null)
+                {
+                    _ambientTransaction.TransactionCompleted -= HandleTransactionCompleted;
+                    _openedCount--;
+                }
+                if (current != null)
+                {
+                    _openedCount++;
+                    current.TransactionCompleted += HandleTransactionCompleted;
+                }
+
+                _ambientTransaction = current;
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
         }
 
         private void HandleTransactionCompleted(object sender, TransactionEventArgs e)
         {
-            Close();
-
-            if (AmbientTransaction != null)
+            // This could be invoked on a different thread at arbitrary time after the transaction completes
+            try
             {
-                AmbientTransaction.TransactionCompleted -= HandleTransactionCompleted;
-                AmbientTransaction = null;
+                _semaphore.Wait();
+
+                if (_ambientTransaction != null)
+                {
+                    _ambientTransaction.TransactionCompleted -= HandleTransactionCompleted;
+                    _ambientTransaction = null;
+                    _openedCount--;
+                }
+            }
+            finally
+            {
+                _semaphore.Release();
             }
         }
 
@@ -532,8 +546,9 @@ namespace Microsoft.EntityFrameworkCore.Storage
         {
             var wasClosed = false;
 
-            if (_openedCount > 0
-                && --_openedCount == 0
+            if ((_openedCount == 0
+                 || _openedCount > 0
+                 && --_openedCount == 0)
                 && _openedInternally)
             {
                 if (DbConnection.State != ConnectionState.Closed)
